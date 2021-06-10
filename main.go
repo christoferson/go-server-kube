@@ -1,9 +1,11 @@
 package main
 
 import (
+	gocontext "context"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go/server/context"
@@ -11,6 +13,7 @@ import (
 )
 
 var appContext = context.ApplicationContext{}
+var ctx = gocontext.Background()
 
 func main() {
 
@@ -18,7 +21,7 @@ func main() {
 
 	parentRouter.HandleFunc("/", ProcessRoot).Methods("GET")
 
-	http.ListenAndServe(":10000", parentRouter)
+	http.ListenAndServe(":8080", parentRouter)
 
 }
 
@@ -52,18 +55,20 @@ func setupRoutesApi(apiRouter *mux.Router) {
 	})
 
 	myRouter.HandleFunc("/sql", ProcessTestSql).Methods("GET")
+	myRouter.HandleFunc("/redis", ProcessTestRedis).Methods("GET")
 
 }
 
 func ProcessRoot(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf(`{Root: "%v"}`, "OK")))
+	w.Write([]byte(fmt.Sprintf(`{Root: "%v", Time: "%v"}`, "OK", now)))
 }
 
 func ProcessTestSql(w http.ResponseWriter, r *http.Request) {
-
+	now := time.Now()
 	{
-		err := appContext.Load()
+		err := appContext.LoadDatabase()
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf(`{Message: "%v"}`, err.Error())))
@@ -71,7 +76,51 @@ func ProcessTestSql(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results, err := appContext.Database().Query("SELECT CURRENT_TIMESTAMP")
+	results, err := appContext.Database().Query("SELECT User from user;")
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(fmt.Sprintf(`{Message: "%v"}`, err.Error())))
+		return
+	}
+
+	var uname string
+	var unames []string
+	for results.Next() {
+		err := results.Scan(&uname)
+		if err != nil {
+			log.Fatal(err)
+		}
+		unames = append(unames, uname)
+		log.Println(uname)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf(`{Message: "%v", Names=%v}`, now, unames)))
+
+}
+
+func ProcessTestRedis(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	{
+		err := appContext.LoadRedis()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{Message: "%v"}`, err.Error())))
+			return
+		}
+	}
+
+	{
+		err := appContext.Redis().Set(ctx, "key", "value", 0).Err()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{Message: "%v"}`, err.Error())))
+			return
+		}
+	}
+
+	val, err := appContext.Redis().Get(ctx, "key").Result()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(fmt.Sprintf(`{Message: "%v"}`, err.Error())))
@@ -79,6 +128,6 @@ func ProcessTestSql(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf(`{Message: "%v", Next=%v}`, "OK", results.Next())))
+	w.Write([]byte(fmt.Sprintf(`{Message: "%v", Next=%v}`, now, val)))
 
 }
